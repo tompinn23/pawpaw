@@ -1,0 +1,11 @@
+
+hostname: "localhost"
+
+listeners:
+  tls:
+    address: 127.0.0.1:6697
+    tls: true
+    tls_cert: "cert.pem"
+    tls_key: "key.pem"
+  plain:
+    address: 127.0.0.1:6667

@@ -1,0 +1,25 @@
+[package]
+name = "pawpaw"
+version = "0.1.0"
+edition = "2021"
+
+
+[features]
+default = ["tls"]
+tls = ["native-tls"]
+native-tls = ["dep:tokio-native-tls"]
+rustls = ["dep:tokio-rustls"]
+
+[dependencies]
+figment = { version = "0.10.8", features = ["env", "yaml"] }
+clap = {version = "4.2.0", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+pin-project = "1.0.12"
+tokio-native-tls = { version = "0.3.1", optional = true }
+tokio-rustls = { version = "0.23.1", optional = true }
+proto = { path = "src/proto" }
+
+
+[dependencies.tokio]
+version = "1.27.0"
+features = ["full"]
