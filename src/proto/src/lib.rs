@@ -1,6 +1,4 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
+pub mod codec;
 
 #[cfg(test)]
 mod tests {
