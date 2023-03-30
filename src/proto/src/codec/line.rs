@@ -1,19 +1,20 @@
 use std::{cmp, io};
-use std::io::BufRead;
 use bytes::{Buf, BufMut, BytesMut};
-use encoding::{label::encoding_from_whatwg_label, EncoderTrap, EncodingRef};
+use encoding::{label::encoding_from_whatwg_label, DecoderTrap, EncoderTrap, EncodingRef, ByteWriter};
 use tokio_util::codec::{Decoder, Encoder};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum LineCodecError {
-    #[error("The encoding {} is not supported")]
+    #[error("The encoding {0} is not supported")]
     UnsupportedEncoding(String),
     #[error("LineCodec IO error")]
     Io {
         #[from ]
         source: io::Error
-    }
+    },
+    #[error("Maximum line length exceeded")]
+    MaxLineLengthExceeded
 }
 
 pub struct LineCodec {
@@ -23,7 +24,7 @@ pub struct LineCodec {
 }
 
 impl LineCodec {
-    pub fn new(label: &str, max_length: i32) -> Result<LineCodec, LineCodecError> {
+    pub fn new(label: &str, max_length: usize) -> Result<LineCodec, LineCodecError> {
         encoding_from_whatwg_label(label)
             .map(|enc| LineCodec {
                 encoding: enc,
@@ -39,13 +40,13 @@ impl Decoder for LineCodec {
     type Item = String;
     type Error = LineCodecError;
 
-    fn decode(&mut self, src: &mut BytesMuf) -> Result<Option<Self::Item>, Self::Error> {
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if src.is_empty() {
             return Ok(None);
         }
 
         let read_to = cmp::min(self.max_length.saturating_add(1), src.len());
-        let mut len = match memchr::memmem::find(&src[self.next_index..read_to], b"\r\n") {
+        let len = match memchr::memmem::find(&src[self.next_index..read_to], b"\r\n") {
             Some(n) => n,
             None if src.len() > self.max_length => {
                 src.clear();
@@ -57,7 +58,7 @@ impl Decoder for LineCodec {
                 return Ok(None)
             }
         };
-        let mut buf = src.split_to(len);
+        let buf = src.split_to(len);
         src.advance(2);
         match buf.last(){
             None => return Ok(Some(String::new())),
@@ -80,6 +81,56 @@ impl Decoder for LineCodec {
     }
 }
 
-impl Encoder<String> for LineCodec {
+struct LineBytesMut<'a>(&'a mut BytesMut);
 
+impl<'a> ByteWriter for LineBytesMut<'a> {
+    fn write_byte(&mut self, b: u8) {
+        self.0.put_u8(b);
+    }
+
+    fn write_bytes(&mut self, v: &[u8]) {
+        self.0.put_slice(v);
+    }
+}
+
+impl Encoder<String> for LineCodec {
+    type Error = LineCodecError;
+
+    fn encode(&mut self, item: String, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let mut bytes = LineBytesMut(dst);
+        self.encoding.encode_to(item.as_str(), EncoderTrap::Replace, &mut bytes).or;
+        dst.put_slice( b"\r\n");
+        Ok(())
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use bytes::BufMut;
+    use super::*;
+
+    #[test]
+    fn create_utf8() {
+        let dec = LineCodec::new("utf-8", 512);
+        assert!(dec.is_ok())
+    }
+
+    #[test]
+    fn utf8_decode() {
+        let mut input = BytesMut::new();
+        input.put_slice(b"Hello World\r\n");
+        let mut dec = LineCodec::new("utf-8", 512).expect("Failed to construct utf-8 line decoder");
+        let out = dec.decode(&mut input);
+        assert!(out.is_ok());
+        let out = out.unwrap();
+        assert_eq!(out, Some("Hello World".to_string()));
+
+    }
+
+    #[test]
+    fn create_cp437() {
+        let dec = LineCodec::new("cp437", 512);
+        assert!(dec.is_ok())
+    }
 }
