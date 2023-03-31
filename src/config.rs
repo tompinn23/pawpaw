@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ListenConfig {
-    address: SocketAddr,
+    pub address: SocketAddr,
     #[serde(default = "def_false")]
-    tls: bool,
-    tls_cert: Option<String>,
-    tls_key: Option<String>,
+    pub tls: bool,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
 }
 
 fn def_false() -> bool {
@@ -22,12 +22,12 @@ fn def_false() -> bool {
 pub struct Config {
     #[clap(short, long, value_parser, default_value = "config.yml")]
     // Path to the config file.
-    config: String,
+    pub config: String,
     #[clap(short = 'n', long, value_parser, default_value = "localhost")]
     //Hostname of the IRC server
-    hostname: String,
+    pub hostname: String,
     #[clap(skip)]
-    listeners: HashMap<String, ListenConfig>
+    pub listeners: HashMap<String, ListenConfig>
 }
 
 

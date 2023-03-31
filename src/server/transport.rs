@@ -2,6 +2,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::Duration;
+use futures::{stream::Stream, sink::Sink};
+use tokio_util::codec::Framed;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time;
@@ -9,6 +11,15 @@ use tokio::time::{Interval, Sleep};
 use proto::codec::message::MessageCodec;
 use proto::command::Command;
 use proto::message::{Message, MessageContents, MessageError};
+use pin_project::pin_project;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum PingerError {
+    #[error("ping timeout reached")]
+    PingTimeout,
+}
+
 
 #[derive(Debug)]
 #[pin_project]
@@ -57,7 +68,7 @@ impl Pinger {
         self.project()
             .tx
             .send(Command::Pong(data.to_owned(), None).into())
-            .map_err(|e| ProtocolError::SendError(e))?;
+            .map_err(|source| MessageError::SendError{ source })?;
         Ok(())
     }
 
@@ -67,7 +78,7 @@ impl Pinger {
         let mut this = self.project();
         this.tx
             .send(Command::Ping(data.clone(), None).into())
-            .map_err(|e| ProtocolError::SendError(e))?;
+            .map_err(|source| MessageError::SendError{ source })?;
         if this.ping_deadline.is_none() {
             let ping_deadline = time::sleep(*this.ping_timeout);
             this.ping_deadline.set(Some(ping_deadline));
@@ -81,7 +92,7 @@ impl Future for Pinger {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if let Some(ping_deadline) = self.as_mut().project().ping_deadline.as_pin_mut() {
             match ping_deadline.poll(cx) {
-                Poll::Ready(()) => return Poll::Ready(Err(ProtocolError::PingTimeout)),
+                Poll::Ready(()) => return Poll::Ready(Err(MessageError::PingTimeout)),
                 Poll::Pending => (),
             }
         }

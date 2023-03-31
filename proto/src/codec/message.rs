@@ -52,6 +52,6 @@ impl Encoder<Message> for MessageCodec {
     type Error = MessageCodecError;
 
     fn encode(&mut self, item: Message, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        self.inner.encode(item.into(),dst).map_err(|e| MessageCodecError::LineError { source: e})
+        self.inner.encode(item.to_string(),dst).map_err(|e| MessageCodecError::LineError { source: e})
     }
 }

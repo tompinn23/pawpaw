@@ -2,7 +2,9 @@ use std::fmt;
 use std::fmt::Formatter;
 
 use std::str::FromStr;
+use tokio::sync::mpsc::error::SendError;
 use thiserror::Error;
+use crate::codec::message::MessageCodecError;
 
 
 use crate::command::{Command, CommandError};
@@ -44,8 +46,19 @@ pub enum MessageError {
     EmptyMessage,
     #[error("invalid command")]
     InvalidCommand,
+    #[error("ping timeout")]
+    PingTimeout,
+    #[error("send error")]
+    SendError {
+        #[from]
+        source: SendError<Message>
+    },
+    #[error("codec error")]
+    CodecError {
+        #[from]
+        source: MessageCodecError
+    }
 }
-
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Message {
