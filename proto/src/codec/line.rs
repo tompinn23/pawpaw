@@ -1,4 +1,5 @@
-use std::{cmp, io};
+use std::{cmp, fmt, io};
+use std::fmt::{Error, format};
 use bytes::{Buf, BufMut, BytesMut};
 use encoding::{label::encoding_from_whatwg_label, DecoderTrap, EncoderTrap, EncodingRef, ByteWriter};
 use tokio_util::codec::{Decoder, Encoder};
@@ -60,36 +61,21 @@ impl Decoder for LineCodec {
         };
         let buf = src.split_to(len);
         src.advance(2);
-        match buf.last(){
-            None => return Ok(Some(String::new())),
-            _ => {},
-        }
+        if buf.last().is_none() { return Ok(Some(String::new())); }
         self.next_index = 0;
         match self.encoding.decode(&buf.freeze(), DecoderTrap::Replace) {
             Ok(data) => {
                 Ok(Some(data))
             }
             Err(data) => {
-                return Err(LineCodecError::Io {
+                Err(LineCodecError::Io {
                     source: io::Error::new(
                         io::ErrorKind::InvalidInput,
                         format!("Failed to decode {} as {}.", data, self.encoding.name())
                     )
-                });
+                })
             }
         }
-    }
-}
-
-struct LineBytesMut<'a>(&'a mut BytesMut);
-
-impl<'a> ByteWriter for LineBytesMut<'a> {
-    fn write_byte(&mut self, b: u8) {
-        self.0.put_u8(b);
-    }
-
-    fn write_bytes(&mut self, v: &[u8]) {
-        self.0.put_slice(v);
     }
 }
 
@@ -97,10 +83,31 @@ impl Encoder<String> for LineCodec {
     type Error = LineCodecError;
 
     fn encode(&mut self, item: String, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let mut bytes = LineBytesMut(dst);
-        self.encoding.encode_to(item.as_str(), EncoderTrap::Replace, &mut bytes).or;
-        dst.put_slice( b"\r\n");
-        Ok(())
+        match self.encoding.encode(&item, EncoderTrap::Replace) {
+            Ok(v) => {
+                if v.len() > self.max_length - 2 {
+                    return Err(LineCodecError::MaxLineLengthExceeded);
+                }
+                dst.put_slice(&v);
+                dst.put_slice(b"\r\n");
+                Ok(())
+            }
+            Err(e) => Err(LineCodecError::Io {
+                source: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Failed to encode {} as {}", e, self.encoding.name()))
+            })
+        }
+    }
+}
+
+impl fmt::Debug for LineCodec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LineCodec")
+            .field("encoder", &self.encoding.name())
+            .field("next_index", &self.next_index)
+            .field("max_length", &self.next_index)
+            .finish()
     }
 }
 

@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
-members = [".", "src/proto"]
+members = [".", "proto"]
 
 [features]
 default = ["tls"]
+ircv3 = []
 tls = ["native-tls"]
 native-tls = ["dep:tokio-native-tls"]
 rustls = ["dep:tokio-rustls"]
@@ -19,7 +20,8 @@ serde = { version = "1", features = ["derive"] }
 pin-project = "1.0.12"
 tokio-native-tls = { version = "0.3.1", optional = true }
 tokio-rustls = { version = "0.23.1", optional = true }
-proto = { path = "src/proto" }
+trust-dns-resolver = "*"
+proto = { path = "proto" }
 
 
 [dependencies.tokio]

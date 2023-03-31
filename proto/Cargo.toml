@@ -11,4 +11,4 @@ tokio-util = { version = "0.7.7", features = ["codec"] }
 bytes = "1.4"
 memchr = "2.5"
 pin-project = "1"
-encoding =  { path = "../../encoding" }
+encoding =  { path = "../encoding" }
