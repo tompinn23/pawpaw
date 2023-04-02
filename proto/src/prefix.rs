@@ -65,9 +65,9 @@ impl fmt::Display for Prefix {
                 } else {
                     "".to_owned()
                 };
-                write!(f, "{}{}{}", n, u, h)
+                write!(f, ":{}{}{}", n, u, h)
             }
-            Prefix::Server(n) => write!(f, "{}", n),
+            Prefix::Server(n) => write!(f, ":{}", n),
         }
     }
 }

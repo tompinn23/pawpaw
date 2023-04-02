@@ -4,19 +4,7 @@ use bytes::{Buf, BufMut, BytesMut};
 use encoding::{label::encoding_from_whatwg_label, DecoderTrap, EncoderTrap, EncodingRef, ByteWriter};
 use tokio_util::codec::{Decoder, Encoder};
 use thiserror::Error;
-
-#[derive(Error, Debug)]
-pub enum LineCodecError {
-    #[error("The encoding {0} is not supported")]
-    UnsupportedEncoding(String),
-    #[error("LineCodec IO error")]
-    Io {
-        #[from ]
-        source: io::Error
-    },
-    #[error("Maximum line length exceeded")]
-    MaxLineLengthExceeded
-}
+use crate::error::ProtocolError;
 
 pub struct LineCodec {
     encoding: EncodingRef,
@@ -25,13 +13,13 @@ pub struct LineCodec {
 }
 
 impl LineCodec {
-    pub fn new(label: &str, max_length: usize) -> Result<LineCodec, LineCodecError> {
+    pub fn new(label: &str, max_length: usize) -> Result<LineCodec, ProtocolError> {
         encoding_from_whatwg_label(label)
             .map(|enc| LineCodec {
                 encoding: enc,
                 next_index: 0,
                 max_length
-            }).ok_or_else(|| LineCodecError::UnsupportedEncoding(label.to_string()))
+            }).ok_or_else(|| ProtocolError::UnsupportedEncoding(label.to_string()))
     }
 
     pub fn name(&self) -> &str { self.encoding.name() }
@@ -39,7 +27,7 @@ impl LineCodec {
 
 impl Decoder for LineCodec {
     type Item = String;
-    type Error = LineCodecError;
+    type Error = ProtocolError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if src.is_empty() {
@@ -52,7 +40,7 @@ impl Decoder for LineCodec {
             None if src.len() > self.max_length => {
                 src.clear();
                 self.next_index = 0;
-                return Err(LineCodecError::MaxLineLengthExceeded)
+                return Err(ProtocolError::MaxLineLengthExceeded)
             }
             None => {
                 self.next_index = src.len();
@@ -68,7 +56,7 @@ impl Decoder for LineCodec {
                 Ok(Some(data))
             }
             Err(data) => {
-                Err(LineCodecError::Io {
+                Err(ProtocolError::Io {
                     source: io::Error::new(
                         io::ErrorKind::InvalidInput,
                         format!("Failed to decode {} as {}.", data, self.encoding.name())
@@ -80,19 +68,23 @@ impl Decoder for LineCodec {
 }
 
 impl Encoder<String> for LineCodec {
-    type Error = LineCodecError;
+    type Error = ProtocolError;
 
     fn encode(&mut self, item: String, dst: &mut BytesMut) -> Result<(), Self::Error> {
         match self.encoding.encode(&item, EncoderTrap::Replace) {
-            Ok(v) => {
+            Ok(mut v) => {
                 if v.len() > self.max_length - 2 {
-                    return Err(LineCodecError::MaxLineLengthExceeded);
+                    return Err(ProtocolError::MaxLineLengthExceeded);
+                }
+                // Stop line at first \r\n
+                if let Some(n) = memchr::memmem::find(&v, b"\r\n") {
+                    v.truncate(n);
                 }
                 dst.put_slice(&v);
                 dst.put_slice(b"\r\n");
                 Ok(())
             }
-            Err(e) => Err(LineCodecError::Io {
+            Err(e) => Err(ProtocolError::Io {
                 source: io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("Failed to encode {} as {}", e, self.encoding.name()))

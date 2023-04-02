@@ -8,6 +8,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot::Sender;
+use tokio::task::JoinHandle;
 use trust_dns_resolver::TokioAsyncResolver;
 use proto::prefix::Prefix;
 use crate::config::{Config, ListenConfig};
@@ -15,6 +16,9 @@ use crate::server::state::{ServerState, ServerStateCommand};
 
 #[cfg(feature = "native-tls")]
 use tokio_native_tls::{native_tls::Identity, TlsAcceptor};
+use uuid::Uuid;
+use proto::message::Message;
+use proto::reply::Reply;
 use crate::client::{Client, ClientError};
 
 use crate::server::listener::Listener;
@@ -25,7 +29,6 @@ pub mod socket;
 pub mod transport;
 
 mod state;
-mod cached;
 mod listener;
 
 #[derive(Error, Debug)]
@@ -51,26 +54,40 @@ pub enum ServerError {
         #[from]
         source: tokio_rustls::rustls::Error
     },
-    #[error("sever control: send error")]
+    #[error("sever control send error")]
     ControlSendError,
-    #[error("server control: recv error")]
+    #[error("server control recv error {source}")]
     ControlRecvError {
         #[from]
         source: tokio::sync::oneshot::error::RecvError
     }
 }
 
+impl ServerError {
+    pub fn to_reply(&self, cmd: &str, subcmds: Option<Vec<String>>) -> Reply {
+        if cfg!(debug_assertions) {
+            Reply::ErrGeneric(cmd.to_owned(), subcmds, self.to_string())
+        } else {
+            //TODO: Add some kind of reference to server logging.
+            Reply::ErrGeneric(cmd.to_owned(), subcmds, "Internal Server Error, contact an administrator for assistance.".to_owned())
+        }
+    }
+}
 
+#[derive(Debug)]
 enum ServerPhase {
     Starting,
     Running,
     Stopping
 }
 
+#[derive(Debug)]
 pub struct Server {
     /* Optional too allow a mutable take once */
     state: Option<ServerState>,
     prefix: Prefix,
+    hostname: String,
+    motd: Vec<String>,
     resolver: TokioAsyncResolver,
     listeners: Vec<Listener>,
     tx: UnboundedSender<ServerStateCommand>,
@@ -84,6 +101,8 @@ impl Server {
         let mut server = Self {
             resolver,
             listeners: Vec::new(),
+            motd: config.motd.split("\n").map(|x| x.to_string()).collect(),
+            hostname: config.hostname.clone(),
             prefix: Prefix::Server(config.hostname),
             state: Some(ServerState::new(rx)),
             tx,
@@ -93,7 +112,7 @@ impl Server {
             if listener.tls {
                 #[cfg(any(feature = "native-tls", feature = "rustls"))]
                 server.add_tls_listener(name, listener).await?;
-                #[cfg(not(all(feature = "native-tls", feature = "rustls")))]
+                #[cfg(all(not(feature = "native-tls"), not(feature = "rustls")))]
                 panic!("Tried to add TLS listener with no TLS library enabled.");
             } else {
                 server.add_listener(name, listener).await?;
@@ -101,6 +120,20 @@ impl Server {
         }
         Ok(server)
     }
+
+    pub fn prefix(&self) -> Prefix {
+        self.prefix.clone()
+    }
+    pub fn resolver(&self) -> TokioAsyncResolver { self.resolver.clone() }
+
+    pub fn get_motd(&self) -> &Vec<String> {
+        &self.motd
+    }
+
+    pub fn name(&self) -> String {
+        self.hostname.clone()
+    }
+ 
 
     #[cfg(any(feature = "native-tls", feature = "rustls"))]
     pub async fn add_tls_listener(&mut self, name: String, listener: ListenConfig) -> Result<(), ServerError> {
@@ -145,9 +178,57 @@ impl Server {
         Client::new(conn, self.clone())
     }
 
+    pub async fn server_loop(&mut self) -> JoinHandle<Result<(), ServerError>> {
+        let mut state = self.state.take().expect("Failed to obtain mutable server state");
+        tokio::spawn(async move {
+            while let Some(evt) = state.rx.recv().await {
+                match evt {
+                    ServerStateCommand::SetNick { nick, tx} => {
+                        if state.contains_nick(&nick) {
+                            tx.send(false).map_err(|_| ServerError::ControlSendError)?;
+                        } else {
+                            state.set_nick(nick);
+                            tx.send(true).map_err(|_| ServerError::ControlSendError)?;
+                        }
+                    }
+                    ServerStateCommand::Register { nick, un, peer_address, real, client_tx, tx } => {
+                        tx.send(state.register(nick, un, peer_address, real, client_tx)).map_err(|_| ServerError::ControlSendError)?;
+                    }
+                    ServerStateCommand::DropClient { nick, uuid } => {
+                        state.drop_client(nick, uuid);
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        })
+    }
+
+
+
+
     pub async fn nick_exists(&self, nick: &str) -> Result<bool, ServerError> {
         let (cmd, rx) = ServerStateCommand::nick_check(nick);
         self.tx.send(cmd).map_err(|_| ServerError::ControlSendError)?;
         rx.await.map_err(|source| ServerError::ControlRecvError { source })
     }
+
+    pub async fn set_nick(&self, nick: &str) -> Result<bool, ServerError> {
+        let (cmd, rx) = ServerStateCommand::set_nick(nick);
+        self.tx.send(cmd).map_err(|_| ServerError::ControlSendError)?;
+        rx.await.map_err(|source| ServerError::ControlRecvError { source })
+    }
+
+    pub async fn register(&self, nick: &str, un: &str, peer: &str,  realname: &str, client_tx: UnboundedSender<Message>) -> Result<Option<Uuid>, ServerError> {
+        let (cmd, rx) = ServerStateCommand::register(nick, un, peer, realname, client_tx);
+        self.tx.send(cmd).map_err(|_| ServerError::ControlSendError)?;
+        rx.await.map_err(|source| ServerError::ControlRecvError { source })
+    }
+
+    pub fn drop_client(&self, nick: &str, uuid: &Uuid) {
+        let cmd = ServerStateCommand::drop_client(nick, uuid);
+        self.tx.send(cmd).unwrap_or_default();
+    }
+
 }
+

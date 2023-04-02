@@ -1,10 +1,15 @@
 use std::fmt;
 use std::fmt::{format, Formatter};
-use crate::command::CommandError;
+use crate::error::ProtocolError;
 
 #[repr(u32)]
 #[derive(Clone, PartialEq, Debug)]
 pub enum Reply {
+    MotdStart(String) = 375,
+    Motd(String) = 372,
+    MotdEnd = 376,
+
+    ErrGeneric(String, Option<Vec<String>>, String) = 400,
     ErrNoSuchCommand(String) = 421,
     ErrNoNicknameGiven = 431,
     ErrErroneousNickname(String) = 432,
@@ -18,6 +23,11 @@ pub enum Reply {
 impl<'a> From<&'a Reply> for String {
     fn from(value: &'a Reply) -> Self {
         match value {
+            Reply::MotdStart(server) => format!("375 :- {} Message of the day - ", server),
+            Reply::Motd(line) => format!("372 :- {}", line),
+            Reply::MotdEnd => "376 :End of /MOTD command".to_string(),
+
+            Reply::ErrGeneric(cmd, subs, message) => format!("400 {} {} :{}", cmd, subs.as_ref().unwrap_or( &vec!("".to_owned())).join(" "), message),
             Reply::ErrNoSuchCommand(cmd) => format!("421 {} :Unknown command", cmd),
             Reply::ErrNoNicknameGiven => "431 :No nickname given".to_string(),
             Reply::ErrErroneousNickname(nick) => format!("432 {} :Erroneous nickname", nick),
@@ -37,12 +47,12 @@ impl fmt::Display for Reply {
     }
 }
 
-impl TryFrom<CommandError> for Reply {
+impl TryFrom<ProtocolError> for Reply {
     type Error = ();
 
-    fn try_from(value: CommandError) -> Result<Self, Self::Error> {
+    fn try_from(value: ProtocolError) -> Result<Self, Self::Error> {
         match value {
-            CommandError::NotEnoughArguments(cmd) => Ok(Reply::ErrNeedMoreParams(cmd)),
+            ProtocolError::NotEnoughArguments(cmd) => Ok(Reply::ErrNeedMoreParams(cmd)),
             _ => Err(())
         }
     }

@@ -27,6 +27,8 @@ pub struct Config {
     //Hostname of the IRC server
     pub hostname: String,
     #[clap(skip)]
+    pub motd: String,
+    #[clap(skip)]
     pub listeners: HashMap<String, ListenConfig>
 }
 

@@ -1,6 +1,12 @@
 
 hostname: "localhost"
 
+motd: |
+  Hello y'all welcome to localhost.irc
+  This is the MOTD.
+  glhf.
+
+
 listeners:
   tls:
     address: 127.0.0.1:6697

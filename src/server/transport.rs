@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::Duration;
-use futures::{stream::Stream, sink::Sink};
+use futures::{sink::Sink, stream::Stream};
 use tokio_util::codec::Framed;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::UnboundedSender;
@@ -10,9 +10,44 @@ use tokio::time;
 use tokio::time::{Interval, Sleep};
 use proto::codec::message::MessageCodec;
 use proto::command::Command;
-use proto::message::{Message, MessageContents, MessageError};
+use proto::message::{Message, MessageContents};
 use pin_project::pin_project;
 use thiserror::Error;
+use proto::error::ProtocolError;
+use tokio::sync::mpsc::error::SendError;
+use std::sync::Arc;
+use crate::server::Server;
+
+
+#[derive(Clone, Debug)]
+pub struct Sender {
+    server: Arc<Server>,
+    sender: UnboundedSender<Message>
+}
+
+impl Sender {
+    pub fn send<M: Into<Message>>(&self, msg: M) -> Result<(), ProtocolError> {
+        let mut m = msg.into();
+        m.set_prefix(self.server.prefix());
+        self.sender.send(m).map_err(|_| ProtocolError::SendError)?;
+        Ok(())
+    }
+
+    pub fn new(server: Arc<Server>, sender: UnboundedSender<Message>) -> Self {
+        Self { server, sender }
+    }
+
+    pub fn tx(&self) -> UnboundedSender<Message> {
+        self.sender.clone()
+    }
+
+    fn server(&self) -> &Arc<Server> {
+        &self.server
+    }
+
+}
+
+
 
 #[derive(Debug, Error)]
 pub enum PingerError {
@@ -24,7 +59,7 @@ pub enum PingerError {
 #[derive(Debug)]
 #[pin_project]
 struct Pinger {
-    tx: UnboundedSender<Message>,
+    tx: Sender,
     enabled: bool,
     ping_timeout: Duration,
     #[pin]
@@ -34,7 +69,7 @@ struct Pinger {
 }
 
 impl Pinger {
-    pub fn new(tx: UnboundedSender<Message>) -> Pinger {
+    pub fn new(tx: Sender) -> Pinger {
         let ping_time = Duration::from_secs(120);
         let ping_timeout = Duration::from_secs(30);
         let mut ret = Self {
@@ -48,37 +83,34 @@ impl Pinger {
         ret
     }
 
-    fn handle_message(self: Pin<&mut Self>, message: &Message) -> Result<(), MessageError> {
-        match &message.contents {
-            MessageContents::Command(command) => match command {
-                Command::PING(ref data, _) => {
-                    self.send_pong(data)?;
-                }
-                Command::PONG(_, None) | Command::PONG(_, Some(_)) => {
-                    self.project().ping_deadline.set(None);
-                }
-                _ => (),
-            },
+    fn handle_message(self: Pin<&mut Self>, message: &Message) -> Result<bool, ProtocolError> {
+        if let MessageContents::Command(command) = &message.contents { match command {
+            Command::PING(ref data, _) => {
+                self.send_pong(data)?;
+                return Ok(true);
+            }
+            Command::PONG(_, None) | Command::PONG(_, Some(_)) => {
+                self.project().ping_deadline.set(None);
+                return Ok(true);
+            }
             _ => (),
-        }
-        Ok(())
+        } }
+        Ok(false)
     }
 
-    fn send_pong(self: Pin<&mut Self>, data: &str) -> Result<(), MessageError> {
+    fn send_pong(self: Pin<&mut Self>, data: &str) -> Result<(), ProtocolError> {
         self.project()
             .tx
-            .send(Command::Pong(data.to_owned(), None).into())
-            .map_err(|source| MessageError::SendError{ source })?;
+            .send(Command::Pong(data.to_owned(), None))
+            .map_err(|_| ProtocolError::SendError)?;
         Ok(())
     }
 
-    fn send_ping(self: Pin<&mut Self>) -> Result<(), MessageError> {
-        //FIXME: Send Proper server address.
-        let data = format!("{}", "127.0.0.1");
+    fn send_ping(self: Pin<&mut Self>) -> Result<(), ProtocolError> {
         let mut this = self.project();
         this.tx
-            .send(Command::Ping(data.clone(), None).into())
-            .map_err(|source| MessageError::SendError{ source })?;
+            .send(Command::Ping(this.tx.server().name(), None))
+            .map_err(|_| ProtocolError::SendError)?;
         if this.ping_deadline.is_none() {
             let ping_deadline = time::sleep(*this.ping_timeout);
             this.ping_deadline.set(Some(ping_deadline));
@@ -88,11 +120,11 @@ impl Pinger {
 }
 
 impl Future for Pinger {
-    type Output = Result<(), MessageError>;
+    type Output = Result<(), ProtocolError>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if let Some(ping_deadline) = self.as_mut().project().ping_deadline.as_pin_mut() {
             match ping_deadline.poll(cx) {
-                Poll::Ready(()) => return Poll::Ready(Err(MessageError::PingTimeout)),
+                Poll::Ready(()) => return Poll::Ready(Err(ProtocolError::PingTimeout)),
                 Poll::Pending => (),
             }
         }
@@ -118,7 +150,7 @@ impl<T> Transport<T>
     where
         T: Unpin + AsyncRead + AsyncWrite,
 {
-    pub fn new(inner: Framed<T, MessageCodec>, tx: UnboundedSender<Message>) -> Transport<T> {
+    pub fn new(inner: Framed<T, MessageCodec>, tx: Sender) -> Transport<T> {
         let pinger = Some(Pinger::new(tx));
         Transport {
             inner,
@@ -135,7 +167,7 @@ impl<T> Stream for Transport<T>
     where
         T: Unpin + AsyncRead + AsyncWrite,
 {
-    type Item = Result<Message, MessageError>;
+    type Item = Result<Message, ProtocolError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Some(pinger) = self.as_mut().project().pinger.as_pin_mut() {
@@ -144,14 +176,22 @@ impl<T> Stream for Transport<T>
                 Poll::Pending => (),
             }
         }
-        let result = ready!(self.as_mut().project().inner.poll_next(cx));
-        let message = match result {
+        let result: Option<Result<Result<Message, ProtocolError>, ProtocolError>>= ready!(self.as_mut().project().inner.poll_next(cx));
+        let message: Message = match result {
             None => return Poll::Ready(None),
-            Some(message) => message?,
+            Some(message) => match message {
+                Ok(msg) => match msg {
+                    Ok(v) => v,
+                    Err(v) => return Poll::Ready(Some(Err(v)))
+                },
+                Err(v) => return Poll::Ready(Some(Err(v)))
+            },
         };
 
         if let Some(pinger) = self.as_mut().project().pinger.as_pin_mut() {
-            pinger.handle_message(&message)?;
+            if pinger.handle_message(&message)? {
+                return Poll::Pending;
+            }
         }
         Poll::Ready(Some(Ok(message)))
     }
@@ -161,7 +201,7 @@ impl<T> Sink<Message> for Transport<T>
     where
         T: Unpin + AsyncRead + AsyncWrite,
 {
-    type Error = MessageError;
+    type Error = ProtocolError;
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         ready!(self.project().inner.poll_ready(cx))?;
         Poll::Ready(Ok(()))
@@ -182,3 +222,4 @@ impl<T> Sink<Message> for Transport<T>
         Poll::Ready(Ok(()))
     }
 }
+

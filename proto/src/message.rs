@@ -4,10 +4,10 @@ use std::fmt::Formatter;
 use std::str::FromStr;
 use tokio::sync::mpsc::error::SendError;
 use thiserror::Error;
-use crate::codec::message::MessageCodecError;
 
 
-use crate::command::{Command, CommandError};
+use crate::command::{Command};
+use crate::error::ProtocolError;
 use crate::prefix::Prefix;
 use crate::reply::Reply;
 
@@ -35,31 +35,6 @@ impl fmt::Display for MessageContents {
     }
 }
 
-#[derive(Error, Debug)]
-pub enum MessageError {
-    #[error("command error")]
-    CommandError {
-        #[from]
-        source: CommandError
-    },
-    #[error("message is empty")]
-    EmptyMessage,
-    #[error("invalid command")]
-    InvalidCommand,
-    #[error("ping timeout")]
-    PingTimeout,
-    #[error("send error")]
-    SendError {
-        #[from]
-        source: SendError<Message>
-    },
-    #[error("codec error")]
-    CodecError {
-        #[from]
-        source: MessageCodecError
-    }
-}
-
 #[derive(Clone, PartialEq, Debug)]
 pub struct Message {
     pub prefix: Option<Prefix>,
@@ -67,14 +42,18 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn new(prefix: Option<&str>, command: &str, args: Vec<&str>) -> Result<Message, MessageError> {
+    pub fn new(prefix: Option<&str>, command: &str, args: Vec<&str>) -> Result<Message, ProtocolError> {
         Ok(Message {
             prefix: prefix.map(|p| p.into()),
             contents: MessageContents::Command(Command::new(command, args)?),
         })
     }
 
-    pub fn set_prefix(&mut self, prefix: &str) {
+    pub fn set_prefix(&mut self, prefix: Prefix) {
+        self.prefix = Some(prefix);
+    }
+
+    pub fn prefix_from_str(&mut self, prefix: &str) {
         self.prefix = Some(Prefix::from(prefix));
     }
 }
@@ -102,6 +81,7 @@ impl<'a> From<&'a Message> for String {
         let mut buf = String::new();
         if let Some(prefix) = &value.prefix {
             buf.push_str(&prefix.to_string());
+            buf.push(' ');
         }
         buf.push_str(&value.contents.to_string());
         buf
@@ -115,12 +95,22 @@ impl fmt::Display for Message {
     }
 }
 
+#[derive(Error, Debug)]
+pub enum MessageParseError {
+    #[error("empty message")]
+    EmptyMessage,
+    #[error("invalid command")]
+    InvalidCommand,
+    #[error("parse failed: {0}")]
+    ParseFailed(String),
+}
+
 impl FromStr for Message {
-    type Err = MessageError;
+    type Err = ProtocolError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.is_empty() {
-            return Err(MessageError::EmptyMessage);
+            return Err(ProtocolError::EmptyMessage);
         }
 
         let mut state = s;
@@ -146,7 +136,7 @@ impl FromStr for Message {
             }
             // If there's no arguments but the "command" starts with colon, it's not a command.
             None if state.starts_with(':') => {
-                return Err(MessageError::InvalidCommand);
+                return Err(ProtocolError::InvalidCommand);
             }
             // If there's no arguments following the command, the rest of the state is the command.
             None => {
