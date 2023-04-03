@@ -1,28 +1,26 @@
+use crate::proto::Command;
+use crate::proto::MessageCodec;
+use crate::proto::ProtocolError;
+use crate::proto::{Message, MessageContents};
+use crate::server::Server;
+use futures::{sink::Sink, stream::Stream};
+use pin_project::pin_project;
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{Context, Poll, ready};
+use std::sync::Arc;
+use std::task::{ready, Context, Poll};
 use std::time::Duration;
-use futures::{sink::Sink, stream::Stream};
-use tokio_util::codec::Framed;
+use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time;
 use tokio::time::{Interval, Sleep};
-use proto::codec::message::MessageCodec;
-use proto::command::Command;
-use proto::message::{Message, MessageContents};
-use pin_project::pin_project;
-use thiserror::Error;
-use proto::error::ProtocolError;
-use tokio::sync::mpsc::error::SendError;
-use std::sync::Arc;
-use crate::server::Server;
-
+use tokio_util::codec::Framed;
 
 #[derive(Clone, Debug)]
 pub struct Sender {
     server: Arc<Server>,
-    sender: UnboundedSender<Message>
+    sender: UnboundedSender<Message>,
 }
 
 impl Sender {
@@ -44,17 +42,13 @@ impl Sender {
     fn server(&self) -> &Arc<Server> {
         &self.server
     }
-
 }
-
-
 
 #[derive(Debug, Error)]
 pub enum PingerError {
     #[error("ping timeout reached")]
     PingTimeout,
 }
-
 
 #[derive(Debug)]
 #[pin_project]
@@ -77,24 +71,26 @@ impl Pinger {
             enabled: true,
             ping_timeout,
             ping_deadline: None,
-            ping_interval: time::interval(ping_time)
+            ping_interval: time::interval(ping_time),
         };
         ret.ping_interval.reset();
         ret
     }
 
     fn handle_message(self: Pin<&mut Self>, message: &Message) -> Result<bool, ProtocolError> {
-        if let MessageContents::Command(command) = &message.contents { match command {
-            Command::PING(ref data, _) => {
-                self.send_pong(data)?;
-                return Ok(true);
+        if let MessageContents::Command(command) = &message.contents {
+            match command {
+                Command::PING(ref data, _) => {
+                    self.send_pong(data)?;
+                    return Ok(true);
+                }
+                Command::PONG(_, None) | Command::PONG(_, Some(_)) => {
+                    self.project().ping_deadline.set(None);
+                    return Ok(true);
+                }
+                _ => (),
             }
-            Command::PONG(_, None) | Command::PONG(_, Some(_)) => {
-                self.project().ping_deadline.set(None);
-                return Ok(true);
-            }
-            _ => (),
-        } }
+        }
         Ok(false)
     }
 
@@ -147,15 +143,12 @@ pub struct Transport<T> {
 }
 
 impl<T> Transport<T>
-    where
-        T: Unpin + AsyncRead + AsyncWrite,
+where
+    T: Unpin + AsyncRead + AsyncWrite,
 {
     pub fn new(inner: Framed<T, MessageCodec>, tx: Sender) -> Transport<T> {
         let pinger = Some(Pinger::new(tx));
-        Transport {
-            inner,
-            pinger,
-        }
+        Transport { inner, pinger }
     }
 
     pub fn into_inner(self) -> Framed<T, MessageCodec> {
@@ -164,8 +157,8 @@ impl<T> Transport<T>
 }
 
 impl<T> Stream for Transport<T>
-    where
-        T: Unpin + AsyncRead + AsyncWrite,
+where
+    T: Unpin + AsyncRead + AsyncWrite,
 {
     type Item = Result<Message, ProtocolError>;
 
@@ -176,15 +169,16 @@ impl<T> Stream for Transport<T>
                 Poll::Pending => (),
             }
         }
-        let result: Option<Result<Result<Message, ProtocolError>, ProtocolError>>= ready!(self.as_mut().project().inner.poll_next(cx));
+        let result: Option<Result<Result<Message, ProtocolError>, ProtocolError>> =
+            ready!(self.as_mut().project().inner.poll_next(cx));
         let message: Message = match result {
             None => return Poll::Ready(None),
             Some(message) => match message {
                 Ok(msg) => match msg {
                     Ok(v) => v,
-                    Err(v) => return Poll::Ready(Some(Err(v)))
+                    Err(v) => return Poll::Ready(Some(Err(v))),
                 },
-                Err(v) => return Poll::Ready(Some(Err(v)))
+                Err(v) => return Poll::Ready(Some(Err(v))),
             },
         };
 
@@ -198,8 +192,8 @@ impl<T> Stream for Transport<T>
 }
 
 impl<T> Sink<Message> for Transport<T>
-    where
-        T: Unpin + AsyncRead + AsyncWrite,
+where
+    T: Unpin + AsyncRead + AsyncWrite,
 {
     type Error = ProtocolError;
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -222,4 +216,3 @@ impl<T> Sink<Message> for Transport<T>
         Poll::Ready(Ok(()))
     }
 }
-

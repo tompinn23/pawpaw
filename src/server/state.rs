@@ -1,20 +1,21 @@
-use std::collections::{HashMap, HashSet};
+use crate::client::handle::ClientHandle;
+use crate::details::{Channel, ChannelError};
+use crate::proto::Message;
+use crate::server::state::ServerStateCommand::{JoinChannel, NickCheck, Register, SetNick};
 use log::debug;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot::{channel, Receiver, Sender};
 use uuid::Uuid;
-use proto::message::Message;
-use crate::client::handle::ClientHandle;
-use crate::server::state::ServerStateCommand::{NickCheck, Register, SetNick};
 
 pub enum ServerStateCommand {
     NickCheck {
         nick: String,
-        tx: Sender<bool>
+        tx: Sender<bool>,
     },
     SetNick {
         nick: String,
-        tx: Sender<bool>
+        tx: Sender<bool>,
     },
     Register {
         nick: String,
@@ -22,43 +23,79 @@ pub enum ServerStateCommand {
         peer_address: String,
         real: String,
         client_tx: UnboundedSender<Message>,
-        tx: Sender<Option<Uuid>>
+        tx: Sender<Option<Uuid>>,
+    },
+    JoinChannel {
+        uuid: Uuid,
+        chans: Vec<String>,
+        keys: Option<Vec<String>>,
+        tx: Sender<Result<(), ChannelError>>,
     },
     DropClient {
         nick: String,
         uuid: Uuid,
-    }
+    },
 }
 type ServerCommand<T> = (ServerStateCommand, Receiver<T>);
 
 impl ServerStateCommand {
-
     pub fn set_nick(nick: &str) -> ServerCommand<bool> {
         let (tx, rx) = channel();
-        (SetNick {
-            nick: nick.to_owned(),
-            tx
-        }, rx)
+        (
+            SetNick {
+                nick: nick.to_owned(),
+                tx,
+            },
+            rx,
+        )
     }
 
     pub fn nick_check(nick: &str) -> ServerCommand<bool> {
         let (tx, rx) = channel();
-        (NickCheck {
-            nick: nick.to_owned(),
-            tx
-        }, rx)
+        (
+            NickCheck {
+                nick: nick.to_owned(),
+                tx,
+            },
+            rx,
+        )
     }
 
-    pub fn register(nick: &str, un: &str, peer: &str, realname: &str, client_tx: UnboundedSender<Message>) -> ServerCommand<Option<Uuid>> {
+    pub fn join_channel(
+        uuid: &Uuid,
+        chans: Vec<String>,
+        keys: Option<Vec<String>>,
+    ) -> ServerCommand<Result<(), ChannelError>> {
         let (tx, rx) = channel();
-        (Register {
-            nick: nick.to_string(),
-            un: un.to_string(),
-            peer_address: peer.to_string(),
-            real: realname.to_string(),
-            tx,
-            client_tx
-        }, rx)
+        (
+            JoinChannel {
+                uuid: *uuid,
+                chans,
+                keys,
+                tx,
+            },
+            rx,
+        )
+    }
+    pub fn register(
+        nick: &str,
+        un: &str,
+        peer: &str,
+        realname: &str,
+        client_tx: UnboundedSender<Message>,
+    ) -> ServerCommand<Option<Uuid>> {
+        let (tx, rx) = channel();
+        (
+            Register {
+                nick: nick.to_string(),
+                un: un.to_string(),
+                peer_address: peer.to_string(),
+                real: realname.to_string(),
+                tx,
+                client_tx,
+            },
+            rx,
+        )
     }
 
     pub fn drop_client(nick: &str, uuid: &Uuid) -> ServerStateCommand {
@@ -74,6 +111,7 @@ pub struct ServerState {
     pub(crate) rx: UnboundedReceiver<ServerStateCommand>,
     clients: HashMap<Uuid, ClientHandle>,
     nicks: HashSet<String>,
+    channels: HashMap<String, Channel>,
 }
 
 impl ServerState {
@@ -82,6 +120,7 @@ impl ServerState {
             rx,
             clients: HashMap::new(),
             nicks: HashSet::new(),
+            channels: HashMap::new(),
         }
     }
 
@@ -93,7 +132,22 @@ impl ServerState {
         self.nicks.insert(nick)
     }
 
-    pub fn register(&mut self, nick: String, un: String, peer: String, real: String, tx: UnboundedSender<Message>) -> Option<Uuid> {
+    pub fn join_channel(
+        &mut self,
+        uuid: Uuid,
+        chans: Vec<String>,
+        keys: Option<Vec<String>>,
+    ) -> Result<(), ChannelError> {
+    }
+
+    pub fn register(
+        &mut self,
+        nick: String,
+        un: String,
+        peer: String,
+        real: String,
+        tx: UnboundedSender<Message>,
+    ) -> Option<Uuid> {
         let handle = ClientHandle::new(nick, un, peer, real, tx);
         let uuid = Uuid::new_v4();
         self.clients.insert(uuid, handle);

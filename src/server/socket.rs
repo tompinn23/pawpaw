@@ -1,7 +1,6 @@
 use pin_project::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-
 #[cfg(feature = "native-tls")]
 use tokio_native_tls::TlsStream;
 
@@ -15,7 +14,7 @@ pub enum Socket<S> {
     #[cfg(feature = "native-tls")]
     Tls(#[pin] TlsStream<S>),
     #[cfg(feature = "rustls")]
-    RusTls(#[pin] RustlsStream<S>)
+    RusTls(#[pin] RustlsStream<S>),
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for Socket<S> {

@@ -1,6 +1,5 @@
-use clap::builder::Str;
+use crate::proto::message::Message;
 use tokio::sync::mpsc::UnboundedSender;
-use proto::message::Message;
 
 #[derive(Debug)]
 pub struct ClientHandle {
@@ -8,17 +7,23 @@ pub struct ClientHandle {
     un: String,
     hostname: String,
     real: String,
-    tx: UnboundedSender<Message>
+    tx: UnboundedSender<Message>,
 }
 
 impl ClientHandle {
-    pub fn new(nick: String, un: String, hostname: String, real: String, tx: UnboundedSender<Message>) -> Self {
+    pub fn new(
+        nick: String,
+        un: String,
+        hostname: String,
+        real: String,
+        tx: UnboundedSender<Message>,
+    ) -> Self {
         ClientHandle {
             nick,
             un,
             hostname,
             real,
-            tx
+            tx,
         }
     }
 }

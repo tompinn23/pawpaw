@@ -1,31 +1,26 @@
-
-
+use crate::proto::codec::message::MessageCodec;
+use crate::proto::command::Command;
+use crate::proto::error::ProtocolError;
+use crate::proto::message::{Message, MessageContents};
+use crate::proto::reply::Reply;
+use crate::server::socket::Socket;
+use crate::server::transport::{Sender, Transport};
+use crate::server::Server;
+use futures::future::FusedFuture;
+use futures::stream::{FusedStream, SplitSink, SplitStream};
+use futures::{ready, FutureExt, Sink, Stream, StreamExt};
+use log::{debug, error};
+use std::error::Error;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use futures::future::{FusedFuture, poll_fn};
-use futures::stream::{FusedStream, SplitSink, SplitStream};
-use futures::{FutureExt, ready, Sink, Stream, StreamExt};
-use log::{debug, error};
 use thiserror::Error;
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, Semaphore};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::sync::mpsc::error::SendError;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tokio_util::codec::Framed;
 use uuid::Uuid;
-use proto::codec::message::MessageCodec;
-use proto::command::Command;
-use proto::message::{Message, MessageContents, MessageParseError};
-use proto::reply::Reply;
-use crate::server::Server;
-use crate::server::socket::Socket;
-use crate::server::transport::{Sender, Transport};
-use std::error::Error;
-use clap::builder::Str;
-use proto::error::ProtocolError;
 
 pub mod handle;
 
@@ -47,7 +42,6 @@ impl ClientStream {
 
         Ok(output)
     }
-
 }
 
 impl FusedStream for ClientStream {
@@ -75,7 +69,6 @@ impl Stream for ClientStream {
             }
         }
 
-
         match ready!(Pin::new(&mut self.as_mut().stream).poll_next(cx)) {
             Some(Ok(msg)) => {
                 //self.state.handle_message(&msg)?;
@@ -86,13 +79,12 @@ impl Stream for ClientStream {
     }
 }
 
-
 #[derive(Error, Debug)]
 pub enum ClientError {
     #[error(transparent)]
     Protocol {
         #[from]
-        source: ProtocolError
+        source: ProtocolError,
     },
     #[error("client stream closed [disconnect?]")]
     StreamClosed,
@@ -177,7 +169,7 @@ impl Client {
                 s.peer_addr()
             }
         };
-        let (tx_out, rx_out) = mpsc::unbounded_channel();
+        let (tx_out, rx_out) = unbounded_channel();
         let sender = Sender::new(server.clone(), tx_out);
         let framed = Framed::new(sock, MessageCodec::new("utf-8")?);
         let conn = Transport::new(framed, sender.clone());
@@ -237,37 +229,37 @@ impl Client {
             debug!("Handling message: {}", cmd);
             let reply = if self.uuid.is_nil() {
                 match cmd {
-                    Command::NICK(nick, hops) => {
-                        self.handle_nick_message(nick, hops).await
-                    }
+                    Command::NICK(nick, hops) => self.handle_nick_message(nick, hops).await,
                     Command::USER(un, _, _, realname) => {
                         self.handle_user_message(un, realname).await
                     }
-                    _ => Err(Reply::ErrNotRegistered)
+                    _ => Err(Reply::ErrNotRegistered),
                 }
             } else {
                 match cmd {
-                    Command::NICK(nick, hops) => {
+                    Command::NICK(_nick, _hops) => {
                         //self.handle_nick_message(nick, hops).await
                         Ok(())
                     }
-                    Command::USER(un, _, _, realname) => {
-                        Err(Reply::ErrAlreadyRegistered)
-                    }
-                    Command::JOIN(chans, keys) => {
-                        self.handle_join_message(chans, keys).await
-                    }
-                    _ => Err(Reply::ErrGeneric(cmd.name(), None, "Command not handled.".to_owned()))
+                    Command::USER(..) => Err(Reply::ErrAlreadyRegistered),
+                    Command::JOIN(chans, keys) => self.handle_join_message(chans, keys).await,
+                    _ => Err(Reply::ErrGeneric(
+                        cmd.name(),
+                        None,
+                        "Command not handled.".to_owned(),
+                    )),
                 }
             };
             match reply {
                 Ok(_) => {}
-                Err(v) => {
-                    match self.send(v) {
-                        Ok(_) => {}
-                        Err(v) => error!("Err sending message: {} {}", v, v.source().map_or("".to_owned(), |v| v.to_string())),
-                    }
-                }
+                Err(v) => match self.send(v) {
+                    Ok(_) => {}
+                    Err(v) => error!(
+                        "Err sending message: {} {}",
+                        v,
+                        v.source().map_or("".to_owned(), |v| v.to_string())
+                    ),
+                },
             }
         }
     }
@@ -275,26 +267,24 @@ impl Client {
     pub async fn handle_message_error(&mut self, err: ProtocolError) -> Option<ClientError> {
         debug!("err {:?}", err);
         match err {
-            ProtocolError::UnknownCommand(cmd) => {
-                match self.send(Reply::ErrNoSuchCommand(cmd)) {
-                    Ok(_) => { None }
-                    Err(e) => { Some(e) }
-                }
+            ProtocolError::UnknownCommand(cmd) => match self.send(Reply::ErrNoSuchCommand(cmd)) {
+                Ok(_) => None,
+                Err(e) => Some(e),
             },
             ProtocolError::NotEnoughArguments(cmd) => {
                 match self.send(Reply::ErrNeedMoreParams(cmd)) {
-                    Ok(_) => { None }
-                    Err(e) => { Some(e) }
+                    Ok(_) => None,
+                    Err(e) => Some(e),
                 }
             }
-            v => { Some(v.into()) }
+            v => Some(v.into()),
         }
     }
 
     /*
-        DO not call this repeatedly in a loop.
-        Best used when u need to just send outgoing without expecting input.
-     */
+       DO not call this repeatedly in a loop.
+       Best used when u need to just send outgoing without expecting input.
+    */
     pub async fn poll_nowait(&mut self) -> Result<(), ClientError> {
         if let Some(option) = self.stream.next().now_or_never() {
             if let Some(option) = option {
@@ -330,9 +320,17 @@ impl Client {
         Ok(())
     }
 
-
-    pub async fn handle_nick_message(&mut self, nick: String, hops: Option<i32>) -> Result<(), Reply> {
-        if self.server.set_nick(&nick).await.map_err(|e| e.to_reply("NICK", None))? {
+    pub async fn handle_nick_message(
+        &mut self,
+        nick: String,
+        hops: Option<i32>,
+    ) -> Result<(), Reply> {
+        if self
+            .server
+            .set_nick(&nick)
+            .await
+            .map_err(|e| e.to_reply("NICK", None))?
+        {
             self.nick = nick;
         } else {
             return Err(Reply::ErrNickCollision(nick));
@@ -344,19 +342,36 @@ impl Client {
         if !self.uuid.is_nil() {
             return Err(Reply::ErrAlreadyRegistered);
         }
-        if let Some(uuid) = self.server.register(&self.nick, &un, &self.hostname, &realname, self.sender.tx()).await.map_err(|e| e.to_reply("USER", None))? {
+        if let Some(uuid) = self
+            .server
+            .register(&self.nick, &un, &self.hostname, &realname, self.sender.tx())
+            .await
+            .map_err(|e| e.to_reply("USER", None))?
+        {
             self.uuid = uuid;
             self.username = un;
             self.realname = realname;
             self.send_motd();
         } else {
-            return Err(Reply::ErrGeneric("USER".to_string(), None, "No UUID returned".to_string()))
+            return Err(Reply::ErrGeneric(
+                "USER".to_string(),
+                None,
+                "No UUID returned".to_string(),
+            ));
         }
         Ok(())
     }
 
-    pub async fn handle_join_message(&mut self, chans: Vec<String>, keys: Option<Vec<String>>) -> Result<(), Reply> {
-
+    pub async fn handle_join_message(
+        &mut self,
+        chans: Vec<String>,
+        keys: Option<Vec<String>>,
+    ) -> Result<(), Reply> {
+        match self.server.join_channel(&self.uuid, chans, keys).await {
+            Ok(_) => {}
+            Err(_) => {}
+        }
+        Ok(())
     }
 }
 

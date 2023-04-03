@@ -1,9 +1,12 @@
+use clap::Parser;
+use figment::providers::{Env, Format};
+use figment::{
+    providers::{Serialized, Yaml},
+    Figment,
+};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use clap::{Parser};
-use figment::{Figment, providers::{Serialized, Yaml}};
-use figment::providers::{Env, Format};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ListenConfig {
@@ -29,9 +32,8 @@ pub struct Config {
     #[clap(skip)]
     pub motd: String,
     #[clap(skip)]
-    pub listeners: HashMap<String, ListenConfig>
+    pub listeners: HashMap<String, ListenConfig>,
 }
-
 
 pub fn load_config() -> Config {
     let args = Config::parse();
@@ -40,5 +42,6 @@ pub fn load_config() -> Config {
         .merge(Serialized::defaults(args))
         .merge(Yaml::file(config_path))
         .merge(Env::prefixed("PAW_"))
-        .extract().expect("Failed to load config")
+        .extract()
+        .expect("Failed to load config")
 }
