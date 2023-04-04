@@ -18,4 +18,6 @@ impl Channel {
             mode: ChannelMode::default(),
         }
     }
+
+    pub fn get_clients()
 }

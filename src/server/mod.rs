@@ -23,6 +23,7 @@ use crate::server::listener::Listener;
 pub mod socket;
 pub mod transport;
 
+mod client;
 mod listener;
 mod state;
 
@@ -104,7 +105,7 @@ impl Server {
             motd: config.motd.split("\n").map(|x| x.to_string()).collect(),
             hostname: config.hostname.clone(),
             prefix: Prefix::ServerOrNick(config.hostname),
-            state: Some(ServerState::new(rx)),
+            state: Some(ServerState::new()),
             tx,
             phase: ServerPhase::Starting,
         };
@@ -199,39 +200,39 @@ impl Server {
             .take()
             .expect("Failed to obtain mutable server state");
         tokio::spawn(async move {
-            while let Some(evt) = state.rx.recv().await {
-                match evt {
-                    ServerStateCommand::SetNick { nick, tx } => {
-                        if state.contains_nick(&nick) {
-                            tx.send(false).map_err(|_| ServerError::ControlSendError)?;
-                        } else {
-                            state.set_nick(nick);
-                            tx.send(true).map_err(|_| ServerError::ControlSendError)?;
-                        }
-                    }
-                    ServerStateCommand::Register {
-                        nick,
-                        un,
-                        peer_address,
-                        real,
-                        client_tx,
-                        tx,
-                    } => {
-                        tx.send(state.register(nick, un, peer_address, real, client_tx))
-                            .map_err(|_| ServerError::ControlSendError)?;
-                    }
-                    ServerStateCommand::JoinChannel {
-                        uuid,
-                        chans,
-                        keys,
-                        tx,
-                    } => tx.send(state.join_channel(uuid, chans, keys)),
-                    ServerStateCommand::DropClient { nick, uuid } => {
-                        state.drop_client(nick, uuid);
-                    }
-                    _ => {}
-                }
-            }
+            // while let Some(evt) = state.rx.recv().await {
+            //     match evt {
+            //         ServerStateCommand::SetNick { nick, tx } => {
+            //             if state.contains_nick(&nick) {
+            //                 tx.send(false).map_err(|_| ServerError::ControlSendError)?;
+            //             } else {
+            //                 state.set_nick(nick);
+            //                 tx.send(true).map_err(|_| ServerError::ControlSendError)?;
+            //             }
+            //         }
+            //         ServerStateCommand::Register {
+            //             nick,
+            //             un,
+            //             peer_address,
+            //             real,
+            //             client_tx,
+            //             tx,
+            //         } => {
+            //             tx.send(state.register(nick, un, peer_address, real, client_tx))
+            //                 .map_err(|_| ServerError::ControlSendError)?;
+            //         }
+            //         ServerStateCommand::JoinChannel {
+            //             uuid,
+            //             chans,
+            //             keys,
+            //             tx,
+            //         } => tx.send(state.join_channel(uuid, chans, keys)),
+            //         ServerStateCommand::DropClient { nick, uuid } => {
+            //             state.drop_client(nick, uuid);
+            //         }
+            //         _ => {}
+            //     }
+            // }
             Ok(())
         })
     }

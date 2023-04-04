@@ -1,9 +1,13 @@
 use crate::client::handle::ClientHandle;
 use crate::details::{Channel, ChannelError};
-use crate::proto::Message;
+use crate::proto::{Message, Reply};
 use crate::server::state::ServerStateCommand::{JoinChannel, NickCheck, Register, SetNick};
+use crate::server::{transport, Server};
+use dashmap::{DashMap, DashSet};
 use log::debug;
 use std::collections::{HashMap, HashSet};
+use std::iter::zip;
+use std::sync::Arc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot::{channel, Receiver, Sender};
 use uuid::Uuid;
@@ -108,45 +112,54 @@ impl ServerStateCommand {
 
 #[derive(Debug)]
 pub struct ServerState {
-    pub(crate) rx: UnboundedReceiver<ServerStateCommand>,
-    clients: HashMap<Uuid, ClientHandle>,
-    nicks: HashSet<String>,
-    channels: HashMap<String, Channel>,
+    //pub(crate) rx: UnboundedReceiver<ServerStateCommand>,
+    clients: DashMap<Uuid, ClientHandle>,
+    nicks: DashSet<String>,
+    channels: DashMap<String, Channel>,
 }
 
 impl ServerState {
-    pub fn new(rx: UnboundedReceiver<ServerStateCommand>) -> Self {
+    pub fn new() -> Self {
         ServerState {
-            rx,
-            clients: HashMap::new(),
-            nicks: HashSet::new(),
-            channels: HashMap::new(),
+            clients: DashMap::new(),
+            nicks: DashSet::new(),
+            channels: DashMap::new(),
         }
     }
 
-    pub fn contains_nick(&mut self, nick: &String) -> bool {
+    pub fn contains_nick(&self, nick: &String) -> bool {
         self.nicks.contains(nick)
     }
 
-    pub fn set_nick(&mut self, nick: String) -> bool {
+    pub fn set_nick(&self, nick: String) -> bool {
         self.nicks.insert(nick)
     }
 
     pub fn join_channel(
-        &mut self,
+        &self,
         uuid: Uuid,
         chans: Vec<String>,
         keys: Option<Vec<String>>,
-    ) -> Result<(), ChannelError> {
+    ) -> Result<Reply, ChannelError> {
+        for channel in chans {
+            if let Some(channel) = self.channels.get_mut(&channel) {
+                return Ok(Reply::ErrAlreadyRegistered);
+            } else {
+                let val = Channel::new(uuid);
+                self.channels.insert(channel, val);
+                return Ok(Reply::ErrAlreadyRegistered);
+            }
+        }
+        Ok(Reply::ErrAlreadyRegistered)
     }
 
     pub fn register(
-        &mut self,
+        &self,
         nick: String,
         un: String,
         peer: String,
         real: String,
-        tx: UnboundedSender<Message>,
+        tx: transport::Sender,
     ) -> Option<Uuid> {
         let handle = ClientHandle::new(nick, un, peer, real, tx);
         let uuid = Uuid::new_v4();
@@ -154,7 +167,17 @@ impl ServerState {
         Some(uuid)
     }
 
-    pub fn drop_client(&mut self, nick: String, uuid: Uuid) {
+    pub fn get_channel_users(&self, server: &Arc<Server>, channel: &str) -> Vec<Reply> {
+        let preamble = server.prefix.to_string().len() + " xxx :".len();
+        if let Some(channel) = self.channels.get(channel) {
+            let channel = channel.value();
+            let clients = channel.get_clients();
+            while let Some(client) = channel.get_clients().next() {}
+        }
+        vec![Reply::EndOfNames(channel.to_string())]
+    }
+
+    pub fn drop_client(&self, nick: String, uuid: Uuid) {
         if nick.is_empty() || uuid.is_nil() {
             return;
         }
