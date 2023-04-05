@@ -57,6 +57,8 @@ pub enum ServerError {
         #[from]
         source: tokio::sync::oneshot::error::RecvError,
     },
+    #[error("the uuid doesn't have a client")]
+    InvalidUUID,
 }
 
 impl ServerError {
@@ -84,7 +86,7 @@ enum ServerPhase {
 #[derive(Debug)]
 pub struct Server {
     /* Optional too allow a mutable take once */
-    state: Option<ServerState>,
+    state: Arc<ServerState>,
     prefix: Prefix,
     hostname: String,
     motd: Vec<String>,
@@ -104,8 +106,8 @@ impl Server {
             listeners: Vec::new(),
             motd: config.motd.split("\n").map(|x| x.to_string()).collect(),
             hostname: config.hostname.clone(),
-            prefix: Prefix::ServerOrNick(config.hostname),
-            state: Some(ServerState::new()),
+            prefix: Prefix::ServerOrNick(config.hostname.clone()),
+            state: Arc::new(ServerState::new(Prefix::ServerOrNick(config.hostname))),
             tx,
             phase: ServerPhase::Starting,
         };
@@ -135,6 +137,10 @@ impl Server {
 
     pub fn name(&self) -> String {
         self.hostname.clone()
+    }
+
+    pub fn state(&self) -> Arc<ServerState> {
+        self.state.clone()
     }
 
     #[cfg(any(feature = "native-tls", feature = "rustls"))]
@@ -195,10 +201,10 @@ impl Server {
     }
 
     pub async fn server_loop(&mut self) -> JoinHandle<Result<(), ServerError>> {
-        let mut state = self
-            .state
-            .take()
-            .expect("Failed to obtain mutable server state");
+        // let mut state = self
+        //     .state
+        //     .take()
+        //     .expect("Failed to obtain mutable server state");
         tokio::spawn(async move {
             // while let Some(evt) = state.rx.recv().await {
             //     match evt {
@@ -288,7 +294,6 @@ impl Server {
     }
 
     pub fn drop_client(&self, nick: &str, uuid: &Uuid) {
-        let cmd = ServerStateCommand::drop_client(nick, uuid);
-        self.tx.send(cmd).unwrap_or_default();
+        self.state().drop_client(nick.to_string() ,uuid.clone());
     }
 }

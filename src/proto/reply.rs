@@ -2,47 +2,14 @@ use super::error::ProtocolError;
 use itertools::Itertools;
 use std::fmt;
 use std::fmt::{write, Formatter};
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct NickReply {
-    nick: String,
-    oper: bool,
-    moder_chat: bool,
-}
-
-impl NickReply {
-    pub fn new(nick: String) -> Self {
-        Self {
-            nick,
-            oper: false,
-            moder_chat: false,
-        }
-    }
-
-    pub fn new_operator(nick: String) -> Self {
-        Self {
-            nick,
-            oper: true,
-            moder_chat: false,
-        }
-    }
-}
-
-impl fmt::Display for NickReply {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        if self.oper {
-            write!(f, "@")?;
-        } else if self.moder_chat {
-            write!(f, "+")?;
-        }
-        write!(f, "{}", self.nick)
-    }
-}
+use crate::details::channel::ChannelUser;
 
 #[repr(u32)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Reply {
-    NamReply(String, Vec<NickReply>) = 353,
+    NoTopic(String) = 331,
+    Topic(String, String) = 332,
+    NamReply(String, Vec<ChannelUser>) = 353,
     EndOfNames(String) = 366,
 
     MotdStart(String) = 375,
@@ -63,6 +30,8 @@ pub enum Reply {
 impl<'a> From<&'a Reply> for String {
     fn from(value: &'a Reply) -> Self {
         match value {
+            Reply::NoTopic(channel) => format!("331 {} :No topic is set", channel),
+            Reply::Topic(channel, message) => format!("332 {} :{}", channel, message),
             Reply::NamReply(channel, nicks) => {
                 format!("353 {} :{}", channel, nicks.iter().format(" "))
             }
@@ -109,28 +78,16 @@ impl TryFrom<ProtocolError> for Reply {
 
 #[cfg(test)]
 mod test {
+    use uuid::Uuid;
     use super::*;
 
     #[test]
     pub fn name_reply() {
         let names = vec![
-            NickReply {
-                nick: "pooh".to_string(),
-                oper: true,
-                moder_chat: false,
-            },
-            NickReply {
-                nick: "pooh".to_string(),
-                oper: false,
-                moder_chat: true,
-            },
-            NickReply {
-                nick: "pooh".to_string(),
-                oper: false,
-                moder_chat: false,
-            },
+            ChannelUser::new_oper(Uuid::nil(), "pooh".to_string()),
+            ChannelUser::new(Uuid::nil(), "pooh".to_string()),
         ];
         let name_reply = Reply::NamReply("test".to_string(), names);
-        assert_eq!(name_reply.to_string(), "353 test :@pooh +pooh pooh");
+        assert_eq!(name_reply.to_string(), "353 test :@pooh pooh");
     }
 }

@@ -1,8 +1,8 @@
 use crate::client::handle::ClientHandle;
 use crate::details::{Channel, ChannelError};
-use crate::proto::{Message, Reply};
+use crate::proto::{Message, Prefix, Reply};
 use crate::server::state::ServerStateCommand::{JoinChannel, NickCheck, Register, SetNick};
-use crate::server::{transport, Server};
+use crate::server::{transport, Server, ServerError};
 use dashmap::{DashMap, DashSet};
 use log::debug;
 use std::collections::{HashMap, HashSet};
@@ -10,7 +10,8 @@ use std::iter::zip;
 use std::sync::Arc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot::{channel, Receiver, Sender};
-use uuid::Uuid;
+use uuid::{Uuid, uuid};
+use crate::server::client::ServerClient;
 
 pub enum ServerStateCommand {
     NickCheck {
@@ -113,14 +114,16 @@ impl ServerStateCommand {
 #[derive(Debug)]
 pub struct ServerState {
     //pub(crate) rx: UnboundedReceiver<ServerStateCommand>,
-    clients: DashMap<Uuid, ClientHandle>,
+    prefix: Prefix,
+    clients: DashMap<Uuid, ServerClient>,
     nicks: DashSet<String>,
     channels: DashMap<String, Channel>,
 }
 
 impl ServerState {
-    pub fn new() -> Self {
+    pub fn new(prefix: Prefix) -> Self {
         ServerState {
+            prefix,
             clients: DashMap::new(),
             nicks: DashSet::new(),
             channels: DashMap::new(),
@@ -135,22 +138,38 @@ impl ServerState {
         self.nicks.insert(nick)
     }
 
-    pub fn join_channel(
+    pub async fn join_channel(
         &self,
         uuid: Uuid,
         chans: Vec<String>,
         keys: Option<Vec<String>>,
-    ) -> Result<Reply, ChannelError> {
+    ) -> Result<Vec<Reply>, ServerError> {
+        let mut vec = Vec::new();
         for channel in chans {
-            if let Some(channel) = self.channels.get_mut(&channel) {
-                return Ok(Reply::ErrAlreadyRegistered);
+            if let Some(mut channel) = self.channels.get_mut(&channel) {
+                let nick = match self.clients.get(&uuid) {
+                    Some(val) => {
+                        val.get_nickname().await
+                    }
+                    None => return Err(ServerError::InvalidUUID),
+                };
+                channel.add_client(uuid, nick);
+                vec.push(channel.reply_topic());
+                vec.append(&mut channel.reply_names(self.prefix.clone()));
             } else {
-                let val = Channel::new(uuid);
+                let nick = match self.clients.get(&uuid) {
+                    Some(val) => {
+                        val.get_nickname().await
+                    }
+                    None => return Err(ServerError::InvalidUUID),
+                };
+                let val = Channel::new(channel.clone(), uuid, nick);
+                vec.push(Reply::NoTopic(channel.to_string()));
+                vec.append(&mut val.reply_names(self.prefix.clone()));
                 self.channels.insert(channel, val);
-                return Ok(Reply::ErrAlreadyRegistered);
             }
         }
-        Ok(Reply::ErrAlreadyRegistered)
+        Ok(vec)
     }
 
     pub fn register(
@@ -161,20 +180,17 @@ impl ServerState {
         real: String,
         tx: transport::Sender,
     ) -> Option<Uuid> {
-        let handle = ClientHandle::new(nick, un, peer, real, tx);
+        let handle = ServerClient::new(nick, un, peer, real, tx);
         let uuid = Uuid::new_v4();
         self.clients.insert(uuid, handle);
         Some(uuid)
     }
 
     pub fn get_channel_users(&self, server: &Arc<Server>, channel: &str) -> Vec<Reply> {
-        let preamble = server.prefix.to_string().len() + " xxx :".len();
-        if let Some(channel) = self.channels.get(channel) {
-            let channel = channel.value();
-            let clients = channel.get_clients();
-            while let Some(client) = channel.get_clients().next() {}
+        if let Some(ch) = self.channels.get(channel) {
+            return ch.value().reply_names(server.prefix());
         }
-        vec![Reply::EndOfNames(channel.to_string())]
+        Vec::new()
     }
 
     pub fn drop_client(&self, nick: String, uuid: Uuid) {

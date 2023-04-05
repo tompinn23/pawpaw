@@ -30,6 +30,10 @@ impl ServerClient {
         }
     }
 
+    pub async fn get_nickname(&self) -> String {
+        self.nickname.read().await.clone()
+    }
+
     pub async fn set_nickname(&self, nick: String) {
         let mut n = self.nickname.write().await;
         *n = nick;

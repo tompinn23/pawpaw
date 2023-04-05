@@ -5,7 +5,7 @@ use crate::proto::message::{Message, MessageContents};
 use crate::proto::reply::Reply;
 use crate::server::socket::Socket;
 use crate::server::transport::{Sender, Transport};
-use crate::server::Server;
+use crate::server::{Server, ServerError};
 use futures::future::FusedFuture;
 use futures::stream::{FusedStream, SplitSink, SplitStream};
 use futures::{ready, FutureExt, Sink, Stream, StreamExt};
@@ -326,10 +326,8 @@ impl Client {
         hops: Option<i32>,
     ) -> Result<(), Reply> {
         if self
-            .server
-            .set_nick(&nick)
-            .await
-            .map_err(|e| e.to_reply("NICK", None))?
+            .server.state()
+            .set_nick(nick.clone())
         {
             self.nick = nick;
         } else {
@@ -343,10 +341,8 @@ impl Client {
             return Err(Reply::ErrAlreadyRegistered);
         }
         if let Some(uuid) = self
-            .server
-            .register(&self.nick, &un, &self.hostname, &realname, self.sender.tx())
-            .await
-            .map_err(|e| e.to_reply("USER", None))?
+            .server.state()
+            .register(self.nick.clone(), un.clone(), self.hostname.clone(), realname.clone(), self.sender.clone())
         {
             self.uuid = uuid;
             self.username = un;
@@ -367,11 +363,11 @@ impl Client {
         chans: Vec<String>,
         keys: Option<Vec<String>>,
     ) -> Result<(), Reply> {
-        match self.server.join_channel(&self.uuid, chans, keys).await {
-            Ok(_) => {}
-            Err(_) => {}
+        let replies = self.server.state().join_channel(self.uuid.clone(), chans, keys).await.map_err(|e| e.to_reply("JOIN", None))?;
+        for rpl in replies {
+            self.send(rpl);
         }
-        Ok(())
+        return Ok(());
     }
 }
 
